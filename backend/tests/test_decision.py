@@ -1,5 +1,11 @@
 from app.domain.decision import DecisionAction, FraudSignals, RiskEvidence, choose_action
 from app.domain.rules import evaluate_rules
+from app.main import app
+from app.storage import store
+from fastapi.testclient import TestClient
+
+
+client = TestClient(app)
 
 
 def test_clean_low_risk_transaction_is_approved() -> None:
@@ -29,3 +35,43 @@ def test_risk_score_is_clamped_and_combined() -> None:
 
     assert evidence.combined_risk == 1.0
     assert choose_action(evaluate_rules(FraudSignals()), evidence) == DecisionAction.DECLINE
+
+
+def test_event_ingestion_is_idempotent() -> None:
+    store.events.clear()
+    payload = {
+        "event_id": "event-1",
+        "event_type": "application_submitted",
+        "correlation_id": "correlation-1",
+        "application_id": "application-1",
+        "occurred_at": "2026-09-21T12:00:00Z",
+    }
+
+    first = client.post("/api/v1/events", json=payload)
+    second = client.post("/api/v1/events", json=payload)
+
+    assert first.status_code == 202
+    assert first.json()["duplicate"] is False
+    assert second.json()["duplicate"] is True
+    assert len(store.events) == 1
+
+
+def test_score_can_be_retrieved_with_audit_metadata() -> None:
+    store.decisions.clear()
+    response = client.post(
+        "/api/v1/fraud/score",
+        json={"correlation_id": "correlation-2", "feature_schema_version": "features-1.0"},
+    )
+    decision = response.json()
+
+    retrieved = client.get(f"/api/v1/decisions/{decision['decision_id']}")
+
+    assert response.status_code == 200
+    assert retrieved.status_code == 200
+    assert retrieved.json() == decision
+
+
+def test_unknown_decision_returns_not_found() -> None:
+    response = client.get("/api/v1/decisions/missing")
+
+    assert response.status_code == 404

@@ -1,8 +1,12 @@
-from fastapi import FastAPI
+from datetime import datetime
+from uuid import uuid4
+
+from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
 from .domain.decision import FraudSignals, RiskEvidence, choose_action
 from .domain.rules import evaluate_rules
+from .storage import DecisionRecord, EventRecord, store
 
 
 app = FastAPI(
@@ -13,6 +17,9 @@ app = FastAPI(
 
 
 class ScoreRequest(BaseModel):
+    correlation_id: str = Field(default_factory=lambda: str(uuid4()))
+    feature_schema_version: str = "features-0.1.0"
+    
     applications_last_24h: int = Field(default=0, ge=0)
     is_new_device: bool = False
     identity_match_score: float = Field(default=1.0, ge=0.0, le=1.0)
@@ -25,15 +32,52 @@ class ScoreRequest(BaseModel):
 
 
 class ScoreResponse(BaseModel):
+    decision_id: str
+    correlation_id: str
     decision: str
     combined_risk: float
     reason_codes: list[str]
     rule_version: str
+    feature_schema_version: str
+
+
+class EventRequest(BaseModel):
+    event_id: str = Field(min_length=1)
+    event_type: str = Field(min_length=1)
+    correlation_id: str = Field(min_length=1)
+    customer_id: str | None = None
+    application_id: str | None = None
+    occurred_at: datetime
+
+
+class EventResponse(BaseModel):
+    event_id: str
+    accepted: bool
+    duplicate: bool
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/api/v1/events", response_model=EventResponse, status_code=status.HTTP_202_ACCEPTED)
+def ingest_event(request: EventRequest) -> EventResponse:
+    event = EventRecord(
+        event_id=request.event_id,
+        event_type=request.event_type,
+        customer_id=request.customer_id,
+        application_id=request.application_id,
+        correlation_id=request.correlation_id,
+        occurred_at=request.occurred_at,
+    )
+    existing = store.events.get(request.event_id)
+    store.add_event(event)
+    return EventResponse(
+        event_id=request.event_id,
+        accepted=True,
+        duplicate=existing is not None,
+    )
 
 
 @app.post("/api/v1/fraud/score", response_model=ScoreResponse)
@@ -52,9 +96,40 @@ def score_fraud(request: ScoreRequest) -> ScoreResponse:
         anomaly_risk=request.anomaly_risk,
         graph_risk=request.graph_risk,
     )
+    decision = choose_action(rule_evidence, risk_evidence)
+    decision_record = DecisionRecord(
+        decision_id=str(uuid4()),
+        correlation_id=request.correlation_id,
+        decision=decision,
+        combined_risk=round(risk_evidence.combined_risk, 4),
+        reason_codes=rule_evidence.reason_codes,
+        rule_version="rules-0.1.0",
+        feature_schema_version=request.feature_schema_version,
+        created_at=store.now(),
+    )
+    store.add_decision(decision_record)
     return ScoreResponse(
-        decision=choose_action(rule_evidence, risk_evidence),
+        decision_id=decision_record.decision_id,
+        correlation_id=decision_record.correlation_id,
+        decision=decision_record.decision,
         combined_risk=round(risk_evidence.combined_risk, 4),
         reason_codes=list(rule_evidence.reason_codes),
         rule_version="rules-0.1.0",
+        feature_schema_version=request.feature_schema_version,
+    )
+
+
+@app.get("/api/v1/decisions/{decision_id}", response_model=ScoreResponse)
+def get_decision(decision_id: str) -> ScoreResponse:
+    record = store.get_decision(decision_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    return ScoreResponse(
+        decision_id=record.decision_id,
+        correlation_id=record.correlation_id,
+        decision=record.decision,
+        combined_risk=record.combined_risk,
+        reason_codes=list(record.reason_codes),
+        rule_version=record.rule_version,
+        feature_schema_version=record.feature_schema_version,
     )
