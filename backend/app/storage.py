@@ -25,6 +25,8 @@ class DecisionRecord:
     reason_codes: tuple[str, ...]
     rule_version: str
     feature_schema_version: str
+    model_version: str
+    model_fallback: bool
     created_at: datetime
 
 
@@ -95,10 +97,24 @@ class SQLiteStore:
                 reason_codes TEXT NOT NULL,
                 rule_version TEXT NOT NULL,
                 feature_schema_version TEXT NOT NULL,
+                model_version TEXT NOT NULL DEFAULT 'stored-unknown',
+                model_fallback INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
             """
         )
+        columns = {
+            row[1]
+            for row in self.connection.execute("PRAGMA table_info(decisions)")
+        }
+        if "model_version" not in columns:
+            self.connection.execute(
+                "ALTER TABLE decisions ADD COLUMN model_version TEXT NOT NULL DEFAULT 'stored-unknown'"
+            )
+        if "model_fallback" not in columns:
+            self.connection.execute(
+                "ALTER TABLE decisions ADD COLUMN model_fallback INTEGER NOT NULL DEFAULT 0"
+            )
         self.connection.commit()
 
     def add_event(self, event: EventRecord) -> EventRecord:
@@ -136,8 +152,9 @@ class SQLiteStore:
             """
             INSERT OR REPLACE INTO decisions
                 (decision_id, correlation_id, decision, combined_risk,
-                 reason_codes, rule_version, feature_schema_version, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                  reason_codes, rule_version, feature_schema_version,
+                  model_version, model_fallback, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 decision.decision_id,
@@ -147,6 +164,8 @@ class SQLiteStore:
                 json.dumps(decision.reason_codes),
                 decision.rule_version,
                 decision.feature_schema_version,
+                decision.model_version,
+                int(decision.model_fallback),
                 decision.created_at.isoformat(),
             ),
         )
@@ -167,6 +186,8 @@ class SQLiteStore:
             reason_codes=tuple(json.loads(row["reason_codes"])),
             rule_version=row["rule_version"],
             feature_schema_version=row["feature_schema_version"],
+            model_version=row["model_version"],
+            model_fallback=bool(row["model_fallback"]),
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 

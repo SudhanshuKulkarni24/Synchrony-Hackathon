@@ -69,6 +69,7 @@ def test_score_can_be_retrieved_with_audit_metadata() -> None:
     assert response.status_code == 200
     assert retrieved.status_code == 200
     assert retrieved.json() == decision
+    assert decision["model_version"] in {"fraud-model-0.1.0", "fallback-0.1.0"}
 
 
 def test_unknown_decision_returns_not_found() -> None:

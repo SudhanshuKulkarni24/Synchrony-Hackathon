@@ -3,11 +3,12 @@ import os
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .domain.decision import FraudSignals, RiskEvidence, choose_action
 from .domain.rules import evaluate_rules
 from .features.builder import FEATURE_SCHEMA_VERSION, build_features
+from .model_service import FraudModel
 from .storage import DecisionRecord, EventRecord, InMemoryStore, SQLiteStore, Store
 
 
@@ -25,6 +26,7 @@ def create_store() -> Store:
 
 
 store = create_store()
+fraud_model = FraudModel()
 
 
 class ScoreRequest(BaseModel):
@@ -43,6 +45,8 @@ class ScoreRequest(BaseModel):
 
 
 class ScoreResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     decision_id: str
     correlation_id: str
     decision: str
@@ -50,6 +54,8 @@ class ScoreResponse(BaseModel):
     reason_codes: list[str]
     rule_version: str
     feature_schema_version: str
+    model_version: str
+    model_fallback: bool
 
 
 class EventRequest(BaseModel):
@@ -104,9 +110,18 @@ def score_fraud(request: ScoreRequest) -> ScoreResponse:
         ip_risk_score=features["ip_risk_score"],
     )
     rule_evidence = evaluate_rules(signals)
+    model_evidence = fraud_model.predict(feature_vector)
     risk_evidence = RiskEvidence(
-        supervised_risk=request.supervised_risk,
-        anomaly_risk=request.anomaly_risk,
+        supervised_risk=(
+            request.supervised_risk
+            if request.supervised_risk > 0
+            else model_evidence.supervised_risk
+        ),
+        anomaly_risk=(
+            request.anomaly_risk
+            if request.anomaly_risk > 0
+            else model_evidence.anomaly_risk
+        ),
         graph_risk=request.graph_risk,
     )
     decision = choose_action(rule_evidence, risk_evidence)
@@ -118,6 +133,8 @@ def score_fraud(request: ScoreRequest) -> ScoreResponse:
         reason_codes=rule_evidence.reason_codes,
         rule_version="rules-0.1.0",
         feature_schema_version=request.feature_schema_version,
+        model_version=model_evidence.model_version,
+        model_fallback=model_evidence.used_fallback,
         created_at=store.now(),
     )
     store.add_decision(decision_record)
@@ -129,6 +146,8 @@ def score_fraud(request: ScoreRequest) -> ScoreResponse:
         reason_codes=list(rule_evidence.reason_codes),
         rule_version="rules-0.1.0",
         feature_schema_version=request.feature_schema_version,
+        model_version=decision_record.model_version,
+        model_fallback=decision_record.model_fallback,
     )
 
 
@@ -145,4 +164,6 @@ def get_decision(decision_id: str) -> ScoreResponse:
         reason_codes=list(record.reason_codes),
         rule_version=record.rule_version,
         feature_schema_version=record.feature_schema_version,
+        model_version=record.model_version,
+        model_fallback=record.model_fallback,
     )
