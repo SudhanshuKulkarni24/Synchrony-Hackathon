@@ -1,4 +1,5 @@
 from datetime import datetime
+import os
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, status
@@ -6,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from .domain.decision import FraudSignals, RiskEvidence, choose_action
 from .domain.rules import evaluate_rules
-from .storage import DecisionRecord, EventRecord, store
+from .storage import DecisionRecord, EventRecord, InMemoryStore, SQLiteStore, Store
 
 
 app = FastAPI(
@@ -14,6 +15,15 @@ app = FastAPI(
     version="0.1.0",
     description="Deterministic fraud decision foundation for the lending prototype.",
 )
+
+
+def create_store() -> Store:
+    if os.getenv("FRAUD_STORE", "memory").lower() == "sqlite":
+        return SQLiteStore(os.getenv("FRAUD_DB_PATH", "fraud_detection.db"))
+    return InMemoryStore()
+
+
+store = create_store()
 
 
 class ScoreRequest(BaseModel):
@@ -71,12 +81,12 @@ def ingest_event(request: EventRequest) -> EventResponse:
         correlation_id=request.correlation_id,
         occurred_at=request.occurred_at,
     )
-    existing = store.events.get(request.event_id)
+    duplicate = store.has_event(request.event_id)
     store.add_event(event)
     return EventResponse(
         event_id=request.event_id,
         accepted=True,
-        duplicate=existing is not None,
+        duplicate=duplicate,
     )
 
 

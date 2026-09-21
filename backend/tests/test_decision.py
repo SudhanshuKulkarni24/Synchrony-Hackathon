@@ -1,7 +1,7 @@
 from app.domain.decision import DecisionAction, FraudSignals, RiskEvidence, choose_action
 from app.domain.rules import evaluate_rules
-from app.main import app
-from app.storage import store
+from app.main import app, store
+from app.storage import SQLiteStore
 from fastapi.testclient import TestClient
 
 
@@ -38,7 +38,7 @@ def test_risk_score_is_clamped_and_combined() -> None:
 
 
 def test_event_ingestion_is_idempotent() -> None:
-    store.events.clear()
+    store.clear()
     payload = {
         "event_id": "event-1",
         "event_type": "application_submitted",
@@ -53,11 +53,11 @@ def test_event_ingestion_is_idempotent() -> None:
     assert first.status_code == 202
     assert first.json()["duplicate"] is False
     assert second.json()["duplicate"] is True
-    assert len(store.events) == 1
+    assert store.has_event("event-1")
 
 
 def test_score_can_be_retrieved_with_audit_metadata() -> None:
-    store.decisions.clear()
+    store.clear()
     response = client.post(
         "/api/v1/fraud/score",
         json={"correlation_id": "correlation-2", "feature_schema_version": "features-1.0"},
@@ -75,3 +75,23 @@ def test_unknown_decision_returns_not_found() -> None:
     response = client.get("/api/v1/decisions/missing")
 
     assert response.status_code == 404
+
+
+def test_sqlite_store_persists_decisions(tmp_path) -> None:
+    sqlite_store = SQLiteStore(tmp_path / "fraud.db")
+    response = client.post(
+        "/api/v1/fraud/score",
+        json={"correlation_id": "sqlite-test"},
+    )
+    decision_id = response.json()["decision_id"]
+    record = store.get_decision(decision_id)
+
+    assert record is not None
+    sqlite_store.add_decision(record)
+    sqlite_store.close()
+
+    reopened = SQLiteStore(tmp_path / "fraud.db")
+    persisted = reopened.get_decision(decision_id)
+
+    assert persisted == record
+    reopened.close()
