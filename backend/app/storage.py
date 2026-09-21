@@ -30,6 +30,17 @@ class DecisionRecord:
     created_at: datetime
 
 
+@dataclass(frozen=True)
+class CaseRecord:
+    case_id: str
+    decision_id: str
+    status: str
+    outcome: str | None
+    reason_codes: tuple[str, ...]
+    created_at: datetime
+    updated_at: datetime
+
+
 class Store(Protocol):
     def clear(self) -> None: ...
 
@@ -41,6 +52,14 @@ class Store(Protocol):
 
     def get_decision(self, decision_id: str) -> DecisionRecord | None: ...
 
+    def add_case(self, case: CaseRecord) -> CaseRecord: ...
+
+    def list_cases(self) -> list[CaseRecord]: ...
+
+    def update_case(self, case_id: str, status: str, outcome: str) -> CaseRecord | None: ...
+
+    def metrics(self) -> dict[str, int]: ...
+
     def now(self) -> datetime: ...
 
 
@@ -48,6 +67,7 @@ class InMemoryStore:
     def __init__(self) -> None:
         self.events: dict[str, EventRecord] = {}
         self.decisions: dict[str, DecisionRecord] = {}
+        self.cases: dict[str, CaseRecord] = {}
 
     def add_event(self, event: EventRecord) -> EventRecord:
         return self.events.setdefault(event.event_id, event)
@@ -55,6 +75,7 @@ class InMemoryStore:
     def clear(self) -> None:
         self.events.clear()
         self.decisions.clear()
+        self.cases.clear()
 
     def has_event(self, event_id: str) -> bool:
         return event_id in self.events
@@ -65,6 +86,41 @@ class InMemoryStore:
 
     def get_decision(self, decision_id: str) -> DecisionRecord | None:
         return self.decisions.get(decision_id)
+
+    def add_case(self, case: CaseRecord) -> CaseRecord:
+        self.cases[case.case_id] = case
+        return case
+
+    def list_cases(self) -> list[CaseRecord]:
+        return list(self.cases.values())
+
+    def update_case(self, case_id: str, status: str, outcome: str) -> CaseRecord | None:
+        case = self.cases.get(case_id)
+        if case is None:
+            return None
+        updated = CaseRecord(
+            case_id=case.case_id,
+            decision_id=case.decision_id,
+            status=status,
+            outcome=outcome,
+            reason_codes=case.reason_codes,
+            created_at=case.created_at,
+            updated_at=self.now(),
+        )
+        self.cases[case_id] = updated
+        return updated
+
+    def metrics(self) -> dict[str, int]:
+        decisions = list(self.decisions.values())
+        return {
+            "total_decisions": len(decisions),
+            "approved": sum(item.decision == "APPROVE" for item in decisions),
+            "step_up": sum(item.decision == "STEP_UP" for item in decisions),
+            "manual_review": sum(item.decision == "MANUAL_REVIEW" for item in decisions),
+            "declined": sum(item.decision == "DECLINE" for item in decisions),
+            "open_cases": sum(item.status == "OPEN" for item in self.cases.values()),
+            "closed_cases": sum(item.status == "CLOSED" for item in self.cases.values()),
+        }
 
     @staticmethod
     def now() -> datetime:
@@ -100,6 +156,15 @@ class SQLiteStore:
                 model_version TEXT NOT NULL DEFAULT 'stored-unknown',
                 model_fallback INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS fraud_cases (
+                case_id TEXT PRIMARY KEY,
+                decision_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                outcome TEXT,
+                reason_codes TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             );
             """
         )
@@ -138,7 +203,9 @@ class SQLiteStore:
         return event
 
     def clear(self) -> None:
-        self.connection.executescript("DELETE FROM events; DELETE FROM decisions;")
+        self.connection.executescript(
+            "DELETE FROM events; DELETE FROM decisions; DELETE FROM fraud_cases;"
+        )
         self.connection.commit()
 
     def has_event(self, event_id: str) -> bool:
@@ -189,6 +256,92 @@ class SQLiteStore:
             model_version=row["model_version"],
             model_fallback=bool(row["model_fallback"]),
             created_at=datetime.fromisoformat(row["created_at"]),
+        )
+
+    def add_case(self, case: CaseRecord) -> CaseRecord:
+        self.connection.execute(
+            """
+            INSERT OR REPLACE INTO fraud_cases
+                (case_id, decision_id, status, outcome, reason_codes,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                case.case_id,
+                case.decision_id,
+                case.status,
+                case.outcome,
+                json.dumps(case.reason_codes),
+                case.created_at.isoformat(),
+                case.updated_at.isoformat(),
+            ),
+        )
+        self.connection.commit()
+        return case
+
+    def list_cases(self) -> list[CaseRecord]:
+        rows = self.connection.execute(
+            "SELECT * FROM fraud_cases ORDER BY created_at DESC"
+        ).fetchall()
+        return [self._case_from_row(row) for row in rows]
+
+    def update_case(self, case_id: str, status: str, outcome: str) -> CaseRecord | None:
+        existing = self.connection.execute(
+            "SELECT * FROM fraud_cases WHERE case_id = ?", (case_id,)
+        ).fetchone()
+        if existing is None:
+            return None
+        updated = CaseRecord(
+            case_id=case_id,
+            decision_id=existing["decision_id"],
+            status=status,
+            outcome=outcome,
+            reason_codes=tuple(json.loads(existing["reason_codes"])),
+            created_at=datetime.fromisoformat(existing["created_at"]),
+            updated_at=self.now(),
+        )
+        return self.add_case(updated)
+
+    def metrics(self) -> dict[str, int]:
+        counts = self.connection.execute(
+            """
+            SELECT
+                COUNT(*) AS total_decisions,
+                SUM(decision = 'APPROVE') AS approved,
+                SUM(decision = 'STEP_UP') AS step_up,
+                SUM(decision = 'MANUAL_REVIEW') AS manual_review,
+                SUM(decision = 'DECLINE') AS declined
+            FROM decisions
+            """
+        ).fetchone()
+        cases = self.connection.execute(
+            """
+            SELECT
+                SUM(status = 'OPEN') AS open_cases,
+                SUM(status = 'CLOSED') AS closed_cases
+            FROM fraud_cases
+            """
+        ).fetchone()
+        return {
+            "total_decisions": counts["total_decisions"] or 0,
+            "approved": counts["approved"] or 0,
+            "step_up": counts["step_up"] or 0,
+            "manual_review": counts["manual_review"] or 0,
+            "declined": counts["declined"] or 0,
+            "open_cases": cases["open_cases"] or 0,
+            "closed_cases": cases["closed_cases"] or 0,
+        }
+
+    @staticmethod
+    def _case_from_row(row: sqlite3.Row) -> CaseRecord:
+        return CaseRecord(
+            case_id=row["case_id"],
+            decision_id=row["decision_id"],
+            status=row["status"],
+            outcome=row["outcome"],
+            reason_codes=tuple(json.loads(row["reason_codes"])),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
         )
 
     @staticmethod

@@ -3,19 +3,27 @@ import os
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from .domain.decision import FraudSignals, RiskEvidence, choose_action
 from .domain.rules import evaluate_rules
 from .features.builder import FEATURE_SCHEMA_VERSION, build_features
 from .model_service import FraudModel
-from .storage import DecisionRecord, EventRecord, InMemoryStore, SQLiteStore, Store
+from .storage import CaseRecord, DecisionRecord, EventRecord, InMemoryStore, SQLiteStore, Store
 
 
 app = FastAPI(
     title="Real-Time Fraud Detection API",
     version="0.1.0",
     description="Deterministic fraud decision foundation for the lending prototype.",
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -71,6 +79,31 @@ class EventResponse(BaseModel):
     event_id: str
     accepted: bool
     duplicate: bool
+
+
+class CaseResponse(BaseModel):
+    case_id: str
+    decision_id: str
+    status: str
+    outcome: str | None
+    reason_codes: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class CaseUpdateRequest(BaseModel):
+    status: str = Field(pattern="^(OPEN|CLOSED)$")
+    outcome: str = Field(pattern="^(CONFIRMED_FRAUD|LEGITIMATE|SUSPICIOUS_PENDING|INCONCLUSIVE)$")
+
+
+class MetricsResponse(BaseModel):
+    total_decisions: int
+    approved: int
+    step_up: int
+    manual_review: int
+    declined: int
+    open_cases: int
+    closed_cases: int
 
 
 @app.get("/health")
@@ -138,6 +171,19 @@ def score_fraud(request: ScoreRequest) -> ScoreResponse:
         created_at=store.now(),
     )
     store.add_decision(decision_record)
+    if decision in {"MANUAL_REVIEW", "DECLINE"}:
+        now = store.now()
+        store.add_case(
+            CaseRecord(
+                case_id=str(uuid4()),
+                decision_id=decision_record.decision_id,
+                status="OPEN",
+                outcome=None,
+                reason_codes=rule_evidence.reason_codes,
+                created_at=now,
+                updated_at=now,
+            )
+        )
     return ScoreResponse(
         decision_id=decision_record.decision_id,
         correlation_id=decision_record.correlation_id,
@@ -167,3 +213,40 @@ def get_decision(decision_id: str) -> ScoreResponse:
         model_version=record.model_version,
         model_fallback=record.model_fallback,
     )
+
+
+@app.get("/api/v1/cases", response_model=list[CaseResponse])
+def list_cases() -> list[CaseResponse]:
+    return [
+        CaseResponse(
+            case_id=case.case_id,
+            decision_id=case.decision_id,
+            status=case.status,
+            outcome=case.outcome,
+            reason_codes=list(case.reason_codes),
+            created_at=case.created_at,
+            updated_at=case.updated_at,
+        )
+        for case in store.list_cases()
+    ]
+
+
+@app.patch("/api/v1/cases/{case_id}", response_model=CaseResponse)
+def update_case(case_id: str, request: CaseUpdateRequest) -> CaseResponse:
+    case = store.update_case(case_id, request.status, request.outcome)
+    if case is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return CaseResponse(
+        case_id=case.case_id,
+        decision_id=case.decision_id,
+        status=case.status,
+        outcome=case.outcome,
+        reason_codes=list(case.reason_codes),
+        created_at=case.created_at,
+        updated_at=case.updated_at,
+    )
+
+
+@app.get("/api/v1/metrics", response_model=MetricsResponse)
+def get_metrics() -> MetricsResponse:
+    return MetricsResponse(**store.metrics())

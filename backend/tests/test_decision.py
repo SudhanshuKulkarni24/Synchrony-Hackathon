@@ -78,6 +78,53 @@ def test_unknown_decision_returns_not_found() -> None:
     assert response.status_code == 404
 
 
+def test_review_decision_creates_case_and_feedback_closes_it() -> None:
+    store.clear()
+    response = client.post(
+        "/api/v1/fraud/score",
+        json={"correlation_id": "case-test", "is_new_device": True, "identity_match_score": 0.5},
+    )
+    cases = client.get("/api/v1/cases")
+    case = cases.json()[0]
+    updated = client.patch(
+        f"/api/v1/cases/{case['case_id']}",
+        json={"status": "CLOSED", "outcome": "CONFIRMED_FRAUD"},
+    )
+
+    assert response.json()["decision"] == "MANUAL_REVIEW"
+    assert cases.status_code == 200
+    assert case["decision_id"] == response.json()["decision_id"]
+    assert updated.status_code == 200
+    assert updated.json()["status"] == "CLOSED"
+    assert updated.json()["outcome"] == "CONFIRMED_FRAUD"
+
+
+def test_clean_decision_does_not_create_case() -> None:
+    store.clear()
+
+    response = client.post("/api/v1/fraud/score", json={"correlation_id": "clean-test"})
+
+    assert response.json()["decision"] == "APPROVE"
+    assert client.get("/api/v1/cases").json() == []
+
+
+def test_metrics_track_decisions_and_cases() -> None:
+    store.clear()
+    client.post("/api/v1/fraud/score", json={"correlation_id": "metrics-clean"})
+    client.post(
+        "/api/v1/fraud/score",
+        json={"correlation_id": "metrics-review", "is_new_device": True, "identity_match_score": 0.5},
+    )
+
+    metrics = client.get("/api/v1/metrics")
+
+    assert metrics.status_code == 200
+    assert metrics.json()["total_decisions"] == 2
+    assert metrics.json()["approved"] == 1
+    assert metrics.json()["manual_review"] == 1
+    assert metrics.json()["open_cases"] == 1
+
+
 def test_sqlite_store_persists_decisions(tmp_path) -> None:
     sqlite_store = SQLiteStore(tmp_path / "fraud.db")
     response = client.post(

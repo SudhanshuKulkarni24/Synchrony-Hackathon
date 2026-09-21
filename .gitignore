@@ -6,3 +6,6 @@ __pycache__/
 ml/artifacts/
 ml/evaluation/model_metrics.json
 .env
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
