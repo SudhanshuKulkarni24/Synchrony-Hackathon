@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from .domain.decision import FraudSignals, RiskEvidence, choose_action
 from .domain.rules import evaluate_rules
+from .features.builder import FEATURE_SCHEMA_VERSION, build_features
 from .storage import DecisionRecord, EventRecord, InMemoryStore, SQLiteStore, Store
 
 
@@ -28,7 +29,7 @@ store = create_store()
 
 class ScoreRequest(BaseModel):
     correlation_id: str = Field(default_factory=lambda: str(uuid4()))
-    feature_schema_version: str = "features-0.1.0"
+    feature_schema_version: str = FEATURE_SCHEMA_VERSION
     
     applications_last_24h: int = Field(default=0, ge=0)
     is_new_device: bool = False
@@ -92,13 +93,15 @@ def ingest_event(request: EventRequest) -> EventResponse:
 
 @app.post("/api/v1/fraud/score", response_model=ScoreResponse)
 def score_fraud(request: ScoreRequest) -> ScoreResponse:
+    feature_vector = build_features(request.model_dump())
+    features = feature_vector.as_dict()
     signals = FraudSignals(
-        applications_last_24h=request.applications_last_24h,
-        is_new_device=request.is_new_device,
-        identity_match_score=request.identity_match_score,
-        device_account_count=request.device_account_count,
-        payment_account_count=request.payment_account_count,
-        ip_risk_score=request.ip_risk_score,
+        applications_last_24h=int(features["applications_last_24h"]),
+        is_new_device=bool(features["is_new_device"]),
+        identity_match_score=features["identity_match_score"],
+        device_account_count=int(features["device_account_count"]),
+        payment_account_count=int(features["payment_account_count"]),
+        ip_risk_score=features["ip_risk_score"],
     )
     rule_evidence = evaluate_rules(signals)
     risk_evidence = RiskEvidence(
