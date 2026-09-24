@@ -6,7 +6,9 @@ import joblib
 from .features.builder import FEATURE_NAMES, FEATURE_SCHEMA_VERSION, FeatureVector
 
 
-DEFAULT_ARTIFACT_PATH = Path("ml/artifacts/fraud_models.joblib")
+DEFAULT_ARTIFACT_PATH = (
+    Path(__file__).resolve().parents[2] / "ml" / "artifacts" / "fraud_models.joblib"
+)
 
 
 @dataclass(frozen=True)

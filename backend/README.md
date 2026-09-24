@@ -3,16 +3,17 @@
 ## Local setup
 
 ```powershell
-cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+python -m pip install -r backend/requirements.txt
 ```
 
 ## Run the API
 
 ```powershell
-uvicorn app.main:app --reload
+python -m ml.data.generate_dataset
+python -m ml.training.train_models
+uvicorn backend.app.main:app --reload
 ```
 
 Open `http://127.0.0.1:8000/docs` for the generated OpenAPI documentation.

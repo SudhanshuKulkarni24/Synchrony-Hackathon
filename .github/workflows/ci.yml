@@ -14,6 +14,7 @@ jobs:
           python-version: "3.11"
       - run: python -m pip install -r backend/requirements.txt
       - run: python -m ml.data.generate_dataset
+      - run: python -m ml.training.train_models
       - run: python -m pytest backend/tests -q
 
   frontend:

@@ -1,6 +1,7 @@
-# Sentinel Lending Risk
+# Sentinel Prime Lending Risk
 
-Sentinel is a real-time fraud detection prototype for digital lending. It combines deterministic rules, a supervised tabular model, anomaly evidence, explainable decisions, and an analyst review workflow.
+Sentinel Prime is a real-time fraud detection prototype for digital lending. It combines deterministic rules, a supervised tabular model, anomaly evidence, explainable decisions, and an analyst review workflow.
+
 
 ## What is implemented
 
@@ -68,7 +69,7 @@ Open `http://127.0.0.1:5173/` after both services become healthy.
 
 1. Default signals produce `APPROVE`.
 2. New device plus low identity match produces `MANUAL_REVIEW` and creates a case.
-3. High network risk or linked entities produces `DECLINE` and creates a case.
+3. High network risk produces `DECLINE`; shared devices or payment instruments produce `MANUAL_REVIEW` and create a case.
 
 ## Responsible AI and limitations
 

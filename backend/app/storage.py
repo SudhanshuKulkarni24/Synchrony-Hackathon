@@ -56,7 +56,7 @@ class Store(Protocol):
 
     def list_cases(self) -> list[CaseRecord]: ...
 
-    def update_case(self, case_id: str, status: str, outcome: str) -> CaseRecord | None: ...
+    def update_case(self, case_id: str, status: str, outcome: str | None) -> CaseRecord | None: ...
 
     def metrics(self) -> dict[str, int]: ...
 
@@ -94,7 +94,7 @@ class InMemoryStore:
     def list_cases(self) -> list[CaseRecord]:
         return list(self.cases.values())
 
-    def update_case(self, case_id: str, status: str, outcome: str) -> CaseRecord | None:
+    def update_case(self, case_id: str, status: str, outcome: str | None) -> CaseRecord | None:
         case = self.cases.get(case_id)
         if case is None:
             return None
@@ -285,7 +285,7 @@ class SQLiteStore:
         ).fetchall()
         return [self._case_from_row(row) for row in rows]
 
-    def update_case(self, case_id: str, status: str, outcome: str) -> CaseRecord | None:
+    def update_case(self, case_id: str, status: str, outcome: str | None) -> CaseRecord | None:
         existing = self.connection.execute(
             "SELECT * FROM fraud_cases WHERE case_id = ?", (case_id,)
         ).fetchone()
@@ -350,6 +350,3 @@ class SQLiteStore:
 
     def close(self) -> None:
         self.connection.close()
-
-
-store = InMemoryStore()

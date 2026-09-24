@@ -105,7 +105,7 @@ function App() {
       <header className="masthead">
         <div className="brand-lockup">
           <div className="brand-mark"><ShieldCheck size={20} /></div>
-          <div><p className="overline">Digital lending intelligence</p><h1>Sentinel</h1></div>
+          <div><p className="overline">Digital lending intelligence</p><h1>Sentinel Prime</h1></div>
         </div>
         <div className="status-pill"><span className="pulse" /> Scoring engine online</div>
       </header>

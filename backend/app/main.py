@@ -1,5 +1,6 @@
 from datetime import datetime
 import os
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, status
@@ -20,7 +21,14 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        origin.strip()
+        for origin in os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:5173,http://127.0.0.1:5173",
+        ).split(",")
+        if origin.strip()
+    ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -39,7 +47,7 @@ fraud_model = FraudModel()
 
 class ScoreRequest(BaseModel):
     correlation_id: str = Field(default_factory=lambda: str(uuid4()))
-    feature_schema_version: str = FEATURE_SCHEMA_VERSION
+    feature_schema_version: Literal["features-1.0.0"] = FEATURE_SCHEMA_VERSION
     
     applications_last_24h: int = Field(default=0, ge=0)
     is_new_device: bool = False
@@ -47,9 +55,6 @@ class ScoreRequest(BaseModel):
     device_account_count: int = Field(default=1, ge=1)
     payment_account_count: int = Field(default=1, ge=1)
     ip_risk_score: float = Field(default=0.0, ge=0.0, le=1.0)
-    supervised_risk: float = Field(default=0.0, ge=0.0, le=1.0)
-    anomaly_risk: float = Field(default=0.0, ge=0.0, le=1.0)
-    graph_risk: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class ScoreResponse(BaseModel):
@@ -93,7 +98,10 @@ class CaseResponse(BaseModel):
 
 class CaseUpdateRequest(BaseModel):
     status: str = Field(pattern="^(OPEN|CLOSED)$")
-    outcome: str = Field(pattern="^(CONFIRMED_FRAUD|LEGITIMATE|SUSPICIOUS_PENDING|INCONCLUSIVE)$")
+    outcome: str | None = Field(
+        default=None,
+        pattern="^(CONFIRMED_FRAUD|LEGITIMATE|SUSPICIOUS_PENDING|INCONCLUSIVE)$",
+    )
 
 
 class MetricsResponse(BaseModel):
@@ -145,17 +153,9 @@ def score_fraud(request: ScoreRequest) -> ScoreResponse:
     rule_evidence = evaluate_rules(signals)
     model_evidence = fraud_model.predict(feature_vector)
     risk_evidence = RiskEvidence(
-        supervised_risk=(
-            request.supervised_risk
-            if request.supervised_risk > 0
-            else model_evidence.supervised_risk
-        ),
-        anomaly_risk=(
-            request.anomaly_risk
-            if request.anomaly_risk > 0
-            else model_evidence.anomaly_risk
-        ),
-        graph_risk=request.graph_risk,
+        supervised_risk=model_evidence.supervised_risk,
+        anomaly_risk=model_evidence.anomaly_risk,
+        graph_risk=0.0,
     )
     decision = choose_action(rule_evidence, risk_evidence)
     decision_record = DecisionRecord(
@@ -233,6 +233,10 @@ def list_cases() -> list[CaseResponse]:
 
 @app.patch("/api/v1/cases/{case_id}", response_model=CaseResponse)
 def update_case(case_id: str, request: CaseUpdateRequest) -> CaseResponse:
+    if request.status == "OPEN" and request.outcome is not None:
+        raise HTTPException(status_code=422, detail="Open cases cannot have an outcome")
+    if request.status == "CLOSED" and request.outcome is None:
+        raise HTTPException(status_code=422, detail="Closed cases require an outcome")
     case = store.update_case(case_id, request.status, request.outcome)
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found")

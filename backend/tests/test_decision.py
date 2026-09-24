@@ -60,7 +60,7 @@ def test_score_can_be_retrieved_with_audit_metadata() -> None:
     store.clear()
     response = client.post(
         "/api/v1/fraud/score",
-        json={"correlation_id": "correlation-2", "feature_schema_version": "features-1.0"},
+        json={"correlation_id": "correlation-2", "feature_schema_version": "features-1.0.0"},
     )
     decision = response.json()
 
@@ -123,6 +123,32 @@ def test_metrics_track_decisions_and_cases() -> None:
     assert metrics.json()["approved"] == 1
     assert metrics.json()["manual_review"] == 1
     assert metrics.json()["open_cases"] == 1
+
+
+def test_unsupported_feature_schema_is_rejected() -> None:
+    response = client.post(
+        "/api/v1/fraud/score",
+        json={"feature_schema_version": "features-0.1.0"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_case_outcome_must_match_status() -> None:
+    store.clear()
+    score = client.post(
+        "/api/v1/fraud/score",
+        json={"is_new_device": True, "identity_match_score": 0.5},
+    )
+    case_id = client.get("/api/v1/cases").json()[0]["case_id"]
+
+    response = client.patch(
+        f"/api/v1/cases/{case_id}",
+        json={"status": "OPEN", "outcome": "LEGITIMATE"},
+    )
+
+    assert score.status_code == 200
+    assert response.status_code == 422
 
 
 def test_sqlite_store_persists_decisions(tmp_path) -> None:
